@@ -1,0 +1,137 @@
+---
+title: 'Lab 6: Decision Trees'
+output:
+  pdf_document: default
+  html_document:
+    df_print: paged
+subtitle: PSTAT 131/231, Spring 2026
+header-includes: \usepackage{mathtools}
+urlcolor: blue
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo=TRUE, 
+                      cache=FALSE, 
+                      fig.width=5, 
+                      fig.height=5,
+                      fig.align='center')
+indent1 = '    '      
+indent2 = paste(rep(indent1, 2), collapse='')
+solcode = TRUE
+r = function(x, digits=2){ round(x, digits=digits) }
+```
+
+
+> - Fit decision tree models using package `tree` and `base`
+>       - `tree()` and `summary()`
+>       - `predict()` and `table()`
+>       - `cv.tree()` and `prune.tree()`
+> - Decision trees visualization
+
+```{r pkg, message=F, warning=F, results='hide'}
+
+##install.packages("ISLR")
+##install.packages("tree")
+##install.packages('maptree')
+
+# Load libraries
+library(ISLR) 
+library(tree)
+library(maptree)
+
+# Utility library
+library(dplyr)
+
+# Create data frame with the oringinal eleven variables and High 
+Carseats = Carseats %>% 
+    mutate(High=as.factor(ifelse(Sales <= median(Sales), "No", "Yes")))
+
+# Check the structure of above data frame we just created
+glimpse(Carseats)
+`
+tree, message=F, warning=F, indent=indent1}
+tree.carseats = tree(High ~.-Sales, data = Carseats)
+
+summary(tree.carseats)
+
+# Fit model on training set
+tree.carseats = tree(High~.-Sales, data = Carseats.train) 
+
+# Plot the tree
+draw.tree(tree.carseats, nodeinfo=TRUE, cex = 0.4)
+title("Classification Tree Built on Training Set")
+
+# Predict on test set
+tree.pred = predict(tree.carseats, Carseats.test, type="class") 
+tree.pred
+
+# Obtain confusion matrix
+error = table(tree.pred, High.test)
+error
+# Test accuracy rate
+sum(diag(error))/sum(error)
+# Test error rate (Classification Error)
+1-sum(diag(error))/sum(error)
+
+mean(tree.pred != High.test)
+
+# Set random seed
+set.seed(3) 
+
+# K-Fold cross validation
+cv = cv.tree(tree.carseats, FUN=prune.misclass, K=10)
+# Print out cv
+cv$size
+cv$dev
+
+# Best size 
+# note that there is a tie
+# tree of size 21 and size 16 both have the minimum CV estimate of test error rate
+# we prefer the tree with smaller size
+best.cv = min(cv$size[cv$dev == min(cv$dev)])
+best.cv
+
+# Prune tree.carseats
+pt.cv = prune.misclass (tree.carseats, best=best.cv)
+
+# Plot pruned tree
+plot(pt.cv)
+text(pt.cv, pretty=0, col = "blue", cex = .5)
+title("Pruned tree of size 16")
+
+#5 fold CV
+set.seed(3)
+cv5 = cv.tree(tree.carseats, FUN = prune.misclass, K = 5)
+cv5$size
+cv5$dev
+#best size
+best.cv5 = min(cv5$size[cv5$dev == min(cv5$dev)])
+best.cv5
+
+#plotting size vs. CV error
+plot(cv5$size, cv5$dev, type = "b",
+     xlab = "Number of Leaves", ylab = "CV Misclassification Error",
+     col = "red", main = "5 Fold CV")
+abline(v = best.cv5, lty = 2)
+abline(h = min(cv5$dev), lty = 2)
+
+# Test set is Carseats.test
+pt.cv5 = prune.misclass(tree.carseats, best = best.cv5)
+
+#predict on test set
+pred.pt.cv5 = predict(pt.cv5, Carseats.test, type = "class")
+
+#confusion matrix
+err.pt.cv5 = table(pred.pt.cv5, High.test)
+err.pt.cv5
+
+#test accuracy rate
+sum(diag(err.pt.cv5)) / sum(err.pt.cv5)
+
+#test error rate
+1 - sum(diag(err.pt.cv5)) / sum(err.pt.cv5)
+
+```
+
+-----------------
+Credit: Adopted from *An Introduction to Statistical Learning* by *Gareth James, Daniela Witten, Trevor Hastie and Robert Tibshirani*
