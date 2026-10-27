@@ -1,0 +1,167 @@
+---
+title: "PARTITIONBYPSTAT132"
+author: "Lir Doron"
+date: "2026-10-27"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library(DBI)
+library(RSQLite)
+library(dplyr)
+knitr::opts_chunk$set(echo = TRUE)
+PSTAT132db <- dbConnect(RSQLite:: SQLite(), "PSTAT132-db.sqlite")
+```
+
+```{r}
+print(dbGetQuery(PSTAT132db, "SELECT COUNT(*) FROM orders"))
+
+```
+
+1. Referring to the code in Lecture 7, write an R script using dbGetQuery() that computes the following for every order in the orders table: 
+--> Return one row per order, with 3 extra columns computed by window functions 
+a) For each customer, find their latest 'order_id' and 'order_date'
+--> The customer's most recent order id and order date
+b) The sequential order number for that customer (order_seq: 1st order, 2nd order, etc.,) ordered by 'order_date' ascending
+--> Order seq: 1st, 2nd, 3rd order for that customer, with oldest first 
+c) The total lifetime count of orders placed by that customer (total_customer_orders)
+--> The customer's total number of orders on every row
+
+```{r}
+q1 <- dbGetQuery(PSTAT132db, "
+                 SELECT order_id, customer_id, DATE(order_date) AS order_date, amount, --choosing columns
+                 FIRST_VALUE(order_id) OVER (PARTITION BY customer_id --the first value per customer 
+                 ORDER BY DATE(order_date) DESC, order_id DESC) AS latest_order_id, --order by date newest to oldest and for orders in the same date, the largest order id 
+                 FIRST_VALUE(DATE(order_date)) OVER (PARTITION BY customer_id 
+                 ORDER BY DATE(order_date) DESC, order_id DESC) AS latest_order_date, --get the most recent order date 
+                 ROW_NUMBER() OVER (PARTITION BY customer_id -- orders number for that customer
+                 ORDER BY DATE(order_date) ASC, order_id ASC) AS order_seq, --order by oldest first, and when they are both at the same time, order id smallest
+                 COUNT(*) OVER (PARTITION BY customer_id) AS total_customer_orders
+                 FROM orders --counts the number of rows per customer id (number of orders per customer )
+                 ORDER BY customer_id, order_seq; --this controls how the output is displayed- ordering by customer id and then order_seq per customer 
+                 ")
+print(q1)
+```
+
+2. Referring to the code in Lecture 8:
+--> Show that an index makes a query faster, and prove the database actually uses it 
+a) Write code to measure elapsed time before creating an index
+--> Time the query before any index exists
+b) Create an index on orders.customer_id
+--> Create an index on orders.customer_id 
+c) Use EXPLAIN QUERY PLAN to show that the index is used for a query filtering by customer_id
+--> Prove an index is used
+(before the index it should day SCAN orders meaning it did a full table scan, and after, it should say SEARCH orders USING INDEX idx_orders_customer (customer_id = ?))
+d) Write code to measure elapsed time before and after index creation
+--> Compares elapsed time before vs after
+
+```{r}
+#Building the big table 
+#80000 orders spread across 5000 customers 
+set.seed(42)
+n_customers <- 5000
+n_orders <- 80000
+
+#randomly assigns a customer to each of the 80,000 orders
+cust_ids <- sample.int(n_customers, n_orders, replace = TRUE,
+                       prob = rexp(n_customers, rate = 1 / n_customers))
+order_dates <- as.Date("2020-01-01") + sample(0:365, n_orders, replace = TRUE) #gives each order a random date in 2020 
+
+#assembles the 5 columns into one data frame 
+orders_big <- data.frame(
+  order_id    = seq_len(n_orders),
+  customer_id = cust_ids,
+  order_date  = format(order_dates, "%Y-%m-%d"),
+  status      = sample(c("PENDING","SHIPPED","CANCELLED","RETURNED"), n_orders,
+                       replace = TRUE, prob = c(0.2, 0.6, 0.1, 0.1)),
+  amount      = round(runif(n_orders, 5, 500), 2)
+)
+
+
+#Deletes the old 15 row table and saves the big one into the database under the name orders
+dbExecute(PSTAT132db, "DROP TABLE IF EXISTS orders;")
+dbWriteTable(PSTAT132db, "orders", orders_big)
+
+#testing query
+dbGetQuery(PSTAT132db, "SELECT COUNT(*) AS n_orders FROM orders")  # expect 80000
+
+#Deleting any indexes left over from earlier runs 
+dbExecute(PSTAT132db, "DROP INDEX IF EXISTS idx_orders_customer;")
+dbExecute(PSTAT132db, "DROP INDEX IF EXISTS idx_orders_cust_date;")
+dbExecute(PSTAT132db, "DROP INDEX IF EXISTS idx_orders_cover;")
+dbExecute(PSTAT132db, "DROP INDEX IF EXISTS idx_orders_cust_amount;")
+dbExecute(PSTAT132db, "DROP INDEX IF EXISTS idx_orders_pending;")
+
+#Query used for every timing and plan
+sql_base <- "SELECT * FROM orders WHERE customer_id = 1234;"
+n_reps <- 200 #repeat the query so the time is measurable
+
+#a. Measuring elapsed time BEFORE creating an index
+print(dbGetQuery(PSTAT132db, paste0("EXPLAIN QUERY PLAN ", sql_base))) #expecting SCAN 
+
+time_before <- system.time({
+  for (i in seq_len(n_reps)) res_before <- dbGetQuery(PSTAT132db, sql_base) #sql_base contains SQL you want to examine - reads the rows to select * from orders and look for specified customer id 
+})
+
+print(time_before)
+avg_before <- time_before[["elapsed"]] / n_reps
+avg_before
+
+#b) Creating an index on orders.customer_id 
+#stored lookup structure for customer id 
+dbExecute(PSTAT132db, "CREATE INDEX idx_orders_customer ON orders(customer_id);")
+
+#c)EXPLAIN QUERY PLAN shows the index is used
+print(dbGetQuery(PSTAT132db, paste0("EXPLAIN QUERY PLAN ", sql_base))) #expected SEARCH orders USING INDEX idx_orders_customer (customer_id = ?)
+
+#d) measuring elapsed time AFTER creating the index to compare
+time_after <- system.time({
+  for (i in seq_len(n_reps)) res_after <- dbGetQuery(PSTAT132db, sql_base)
+})
+print(time_after)
+avg_after <- time_after[["elapsed"]] / n_reps
+avg_after
+
+comparison <- data.frame(
+  stage = c("Before index", "After index"), 
+  total_elapsed_sec = c(time_before[["elapsed"]], time_after[["elapsed"]]),
+  avg_per_query_sec = c(avg_before, avg_after)
+)
+print(comparison)
+
+#Speed up factor
+avg_before / avg_after
+
+nrow(res_before) == nrow(res_after)
+```
+
+3. For each order, display the amount of the customer's next order and the number of days until that next order
+```{r}
+q3 <- dbGetQuery(PSTAT132db, "
+                 WITH nxt AS ( --CTE creating a temporary result 
+                 SELECT order_id,
+                 customer_id, 
+                 DATE(order_date) AS order_date,
+                 amount,
+                 LEAD(amount) OVER( --next order amount only looking at rows from the same customer and order by date 
+                 PARTITION BY customer_id
+                 ORDER BY DATE(order_date), order_id) AS next_amount,
+                 LEAD(DATE(order_date)) OVER ( --same idea, but it fetches the next order's date 
+                 PARTITION BY customer_id
+                 ORDER BY DATE(order_date), order_id) AS next_order_date
+                 FROM orders
+                 ) 
+                 SELECT order_id,
+                 customer_id,
+                 order_date,
+                 amount,
+                 next_amount,
+                 CAST(julianday(next_order_date) - julianday(order_date) AS INTEGER) --julianday() converts each date into a plain number, subtracting the 2 gives the number of days between them 
+                 AS days_until_next_order
+                 FROM nxt
+                 ORDER BY customer_id, order_date;
+                 ") %>% mutate(order_date = as.Date(order_date)) #converts the date column from text into a real R date after the query comes back 
+
+print(q3)
+```
+
