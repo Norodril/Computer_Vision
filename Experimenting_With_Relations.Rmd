@@ -1,0 +1,120 @@
+---
+title: "Relations"
+author: "Lir Doron"
+date: "2026-10-27"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Lecture 9 Attribute Closure Algorithm in R+ RSQLite
+
+Demo 1
+```{r}
+library(DBI)
+library(RSQLite)
+PSTAT132db <- dbConnect(RSQLite::SQLite(), "PSTAT132-db.sqlite")
+
+#Attribute Closure Algorithm in R + RSQLite
+#Relations: R(A, B, C, D)
+#FDs: F = {A -> B, B -> C, C -> D}
+#Questions: What is A+? Is A a superkey?
+
+#Creating the relation R
+R_data <- data.frame(
+  A = c(1, 2, 3),
+  B = c(10, 20, 30),
+  C = c(100, 200, 300),
+  D = c(1000, 2000, 3000)
+)
+
+dbWriteTable(PSTAT132db, "R", R_data, overwrite = TRUE) # writing the R data frame into SQLite as a table called R, replacing an existing table named R if one exists
+
+#Storing the functional dependencies in a table
+F_data <- data.frame(
+  #left hand side is the determinant, right hand side is the dependent attribute 
+  lhs = c("A", "B", "C"),
+  rhs = c("B", "C", "D")
+)
+#Saves the dependency table in SQLite under the name FDs
+#Instead of hardcoding each dependency inside the algorithm, we store them in a table. The algorithm can then retrieve the rules and apply them autocomatically
+dbWriteTable(PSTAT132db, "FDs", F_data, overwrite = TRUE)
+
+#Defining the attribute closure function
+attribute_closure <- function(PSTAT132db, fd_table, start_attrs, all_attrs) #calculates the closure of whichever attributes we provide, and those are the unputs
+{
+  closure <- sort(unique(start_attrs)) #inializes the closure with the attributes we already know
+  #ie. Closure for A+ = {A}
+  changed <- TRUE #tells the algorithm whether we should continue looping 
+  while (changed) {
+    changed <- FALSE #at the beginning of each iteration, reset changed to FALSE assuming no new attributes will be added during this pass
+    #if it finds the FD that adds a new attribute, it sets changed back to TRUE 
+    fds <- dbReadTable(PSTAT132db, fd_table) #reading FDs from SQLite
+    #loops through every functional dependency
+    for (i in seq_len(nrow(fds))){
+      U <- fds$lhs[i] #determinant
+      V <- fds$rhs[i] #dependent attribute
+      #If U subseteq X+, then set X+ = X+ union V
+      if(U %in% closure && !(V %in% closure)) { #if the determinant is already in the closure and the dependent attribute is not already in the closure, 
+        closure <- sort(c(closure, V))
+        changed <- TRUE #something changed, loop again
+      }
+    }
+  }
+  return(closure)
+  #Step 3: Terminate- no FD can add anything further closure
+}
+```
+
+Running the Closure for A
+A+ = the set of all attributes you can determine from A using the functional dependencies
+```{r}
+all_attrs <- c("A", "B", "C", "D")
+
+#A+ Should contain A B C and D
+A_plus <- attribute_closure(
+  PSTAT132db, "FDs", "A", all_attrs
+)
+
+#printing results
+cat("A+ =", paste(A_plus, collapse = ", "), "\n")
+
+#Tesitng whether A is a superkey
+is_superkey <- setequal(A_plus, all_attrs)
+#setequal() checks whether A_plus contains exactly the same attributes as all_attrs
+cat("Is A a superkey? ", ifelse(is_superkey, "YES", "NO"), "\n")
+```
+
+Calculating B+ for Comparison
+Should start with {B}, then apply B -> C, giving {B, C} and then C -> D, giving {B, C, D}
+```{r}
+B_plus <- attribute_closure (PSTAT132db, "FDs", "B", all_attrs)
+#Same function call as before, except the starting attribute is now B
+
+cat("B+ =", paste(B_plus, collapse = ", "), "\n")
+
+#Is B a superkey? 
+#Expected Output: NO 
+cat("Is B a superkey? ", ifelse(setequal(B_plus, all_attrs), "YES", "NO"), "\n")
+
+#Verify relation using SQL 
+#Verify that the table was successfully stored in SQLite and can be retrieved 
+cat("\n Sample rows of R read back from SQLite:\n")
+print(dbGetQuery(PSTAT132db, "SELECT * FROM R ORDER BY A"))
+
+#Disconnectig from the database 
+dbDisconnect(PSTAT132db)
+```
+
+
+
+
+
+
+
+
+
+
+
