@@ -1,0 +1,234 @@
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(DBI)
+library(RSQLite)
+library(tibble)
+```
+
+1. Given: EMPLOYEE(EmployeeID, Name, ManagerID)
+
+Explain why a rename operator is needed to find each employee's manager. Write the relational algebra expression that returns the employee's name and manager's name 
+
+Answer: The rename operator is needed since we use the 'EMPLOYEE' table twice: Once of the employee and once for their manager. Renaming the 2 copies lets us distinguish their roles. 
+Ie. To find person1's manager, we look at person1's row and see ManagerID = 3. Then we need to find the row where EmployeeID = 3 to find their manager's name. 
+- The rename operator lets us use the same table in 2 rows at once. 
+ie. Let E = pE(EMPLOYEE)
+M = pM(EMPLOYEE) 
+E.ManagerID = M.EmployeeID 
+
+Relational Algebra Expression: 
+Let $E = \rho_{E}(\text{EMPLOYEE})$ and $M = \rho_{M}(\text{EMPLOYEE})$. Then:
+$$
+\pi_{E.Name,\; M.Name}\left( E \bowtie_{E.ManagerID = M.EmployeeID} M \right)
+$$
+
+2. Given:
+STUDENT(StudentID, Name, Major)
+ENROLLMENT(StudentID, CourseID, Grade)
+
+write relational algebra expressions for:
+a. Students enrolled in at least one course
+b. Student not enrolled in any course
+
+```{r, echo=FALSE, out.width="80%", fig.align="center"}
+knitr::include_graphics("Q2aandb.jpeg")
+```
+
+3. Given: 
+STUDENT(StudentID, Name, Major)
+ENROLLMENT(StudentID, CourseID, Grade)
+Write a relational algebra expression that lists every student and any course in which they are enrolled. Students with no enrollments must still appear. 
+Explain why an inner join is not sufficient.
+
+```{r, echo=FALSE, out.width="80%", fig.align="center"}
+knitr::include_graphics("Q3Notation.jpeg")
+```
+
+Here, a left outer join keeps every student, even if they have no enrollment, vs an inner join would only keep students who are in ENROLLMENTS/ enrolled in courses, so students with no enrollments would not have appeared. 
+
+
+4. Given: 
+PRODUCT(ProductId, ProductName, Price, DiscountRate)
+Write an extended relational algebra expression that returns: ProductName Price DiscountedPrice
+Where DiscountedPrice = Price(1 - DiscountedRate)
+
+
+```{r, echo=FALSE, out.width="80%", fig.align="center"}
+knitr::include_graphics("Q4Notation.jpeg")
+```
+
+5. Refer to the relations and code in Lecture 6
+Write a query using two CTEs in the same WITH statement that reports, for each customer, their January total spend and how that compares to the overall average January spend per customer.
+
+customers- information about each customer
+orders- information about each order, including the customer who made it, the date, and the amount 
+1. Find each customer's total spending in January
+2. Average of those customer totals 
+3. Compare each customer to the average (difference)
+A CTE is a named result that is created temporarily inside a SQL query 
+
+For this Question
+CTE1: 'customer_totals' --> Calculates each customer's January spending
+CTE2: 'average_spend' --> Calculates the average of those customer totals 
+Final SELECT --> Shows each customer's total and compares it to the average 
+
+```{r}
+#Reconnecting
+PSTAT132db <- dbConnect(RSQLite::SQLite(), 
+                        "PSTAT132-db.sqlite")
+
+#Re-creating the tables 
+
+# Re-create the tables in case this is a fresh session
+customers <- data.frame(
+  customer_id = c(1, 2, 3, 4, 5),
+  customer_name = c("Alice Johnson", "Brian Smith", "Carla Davis",
+                    "Daniel Lee", "Emma Wilson"),
+  state = c("CA", "NY", "CA", "TX", "NY"),
+  stringsAsFactors = FALSE
+)
+
+orders <- data.frame(
+  order_id = c(1001, 1002, 1003, 1004, 1005, 1006, 1007, 1008),
+  customer_id = c(1, 1, 2, 3, 3, 4, 1, 5),
+  order_date = c("2023-01-03", "2023-01-10", "2023-01-12", "2023-01-15",
+                 "2023-01-20", "2023-02-05", "2023-02-18", "2023-01-25"),
+  order_amount = c(250, 125, 400, 90, 300, 150, 500, 75),
+  order_status = c("completed", "completed", "cancelled", "completed",
+                   "completed", "completed", "completed", "completed"),
+  stringsAsFactors = FALSE
+)
+
+dbWriteTable(PSTAT132db, "customers", customers, overwrite = TRUE)
+dbWriteTable(PSTAT132db, "orders", orders, overwrite = TRUE)
+```
+
+Question 5
+```{r}
+january_comparison <- dbGetQuery(PSTAT132db, "
+--This CTE calculates each customer's January spending 
+                                 WITH customer_totals AS (
+                                 SELECT
+                                 customer_id,
+                                 SUM(order_amount) AS total_spend
+                                 FROM orders
+                                 WHERE order_date >= '2023-01-01'
+                                 AND order_date < '2023-02-01'
+                                 GROUP BY customer_id
+                                 ),
+                                 -- Another CTE uses the results calculated by the first CTE and finds the average of the customer totals 
+                                 --saves the average customer totals as avg_spend 
+                                 average_spend AS (
+                                 SELECT AVG(total_spend) AS avg_spend
+                                 FROM customer_totals
+                                 )
+                                 --compares each customer to the average
+                                 SELECT
+                                 --Columns that appear 
+                                 --a is CTE 2 
+                                 --ct is CTE 1
+                                 c.customer_id,
+                                 c.customer_name,
+                                 a.avg_spend,
+                                 ct.total_spend - a.avg_spend AS difference 
+                                 -- joining customer_totals and customers
+                                 FROM customer_totals ct
+                                 JOIN customers c 
+                                 ON ct.customer_id = c.customer_id 
+                                 --cross join to attach the single average value to every customer row. since average_spend calculates one overall average, every customer gets the same avg_spend 
+                                 CROSS JOIN average_spend a 
+                                 ORDER BY difference DESC 
+                                 ") %>% 
+  as_tibble() #returns the result to R 
+
+#Displaying results 
+print(january_comparison)
+
+```
+
+6. Refer to the relations and code in Lecture 6. Suppose you need to run reports that repeatedly need "each customer's total spend by month". This exact aggregation appears in 10 different queries across the database. Decide whether to implement this as a CTE or a view, and write the SQL for your choice. Then explain in one or two sentences why you made that decision. 
+
+```{r}
+#creating a view that calculates each customer's total spending by month 
+dbExecute(PSTAT132db, "
+          CREATE VIEW IF NOT EXISTS customer_monthly_spend AS
+          SELECT customer_id, strftime('%Y-%m', order_date) AS spend_month, SUM(order_amount) AS total_spend --strftime() formats a date into the format you want, so the strftime() command takes the order's date, extracts the year and month, and gives that result the column name 'spend_month' 
+          FROM orders
+          GROUP BY customer_id, strftime('%Y-%m', order_date); --put orders from the same customer together, and orders from the same year and month together for total_spend
+          ")
+
+#Display the results from the view
+#dbExecute runs SQL commands that change or create something in the database, dbGetQuery() runs the SQL queries that retrieve data and brings the results into R 
+monthly_spend <- dbGetQuery(PSTAT132db, "
+                            SELECT * 
+                            FROM customer_monthly_spend;
+                            ")
+
+print(monthly_spend) 
+```
+
+I chose a view since the same aggregation is needed for 10 different queries, so a view lets me reuse the same SQL without rewriting it each time it is needed. A CTE only exists for one query, whereas VIEW can be accessed by multiple queries. 
+
+
+
+7. As a data analyst you have been asked which customer spent more than the average customer spending during January 2023?
+Answer the following:
+- What intermediate relation(s) would you need to create conceptually? 
+I would create 2 intermediate relations. The first would calculate each customer's total spending during January 2023. The second would calculate the average of those customer totals. I would then compare each customer's total with the average and return customers whose spending is greater than the average. 
+
+- Explain how a CTE helps organize this task
+A CTE assigns a name to an intermediate query using the 'WITH' clause. It would allow me to calculate each customer's January spending first, calculate the average of those totals next, and then compare each customer against that average. This breaks the problem into smaller, more interpretable steps. 
+
+- Explain why using a CTE is preferable to repeating the same aggregation logic in 2 separated nested subqueries
+A CTE avoids repeating the same aggregation logic, making the query easier to read, maintain and debug. If the aggregation needs to change, it only needs to be updated in one specific place.
+
+- Does a CTE permanently store data in the database? Explain
+No, a CTE does not permanently store data in the database since it only exists for the duration of the SQL statement in which it is defined; it does not create a persistent database object. 
+
+- Would a view be a better choice if this analysis is run once, or only a few times? Explain
+Usually, a view would not be a better choice if it is run once or only a few times since a CTE is more appropriate for a one-time/occasional analysis as it organizes the calculations within a single query. A view is more useful when the same query logic needs to be reused across multiple queries (it might be more useful if the analysis is run more than once/ a few times, or whenever we need to repeat query logic). 
+
+
+8. Using the relations: 
+STUDENT(StudentID, Name, Major)
+ENROLLMENT(StudentID, CourseID, Grade)
+
+A student is considered 'successul' if their average grade across all enrolled courses is at least 85. Write a query using a CTE that: 
+a. Calculates each student's average grade across all courses in ENROLLMENT
+b. Keeps only successful students
+c. Joins the result to STUDENT
+d. Returns StudentID, Name, Major, and average_grade
+e. Sorts the result from highest to lowest average grade
+
+Write the query only (without data to run it).
+Explain why the CTE is useful in this problem 
+
+```sql
+--Calculating each student's average grade from ENROLLMENT and keeping only successful students
+WITH successful_students AS (
+  SELECT StudentID, 
+  AVG(Grade) AS average_grade
+  FROM ENROLLMENT
+  GROUP BY StudentID
+  HAVING AVG(Grade) >= 85
+)
+
+SELECT 
+s.StudentID, --from student 
+s.Name, --from student 
+s.Major, --from student 
+ss.average_grade --from CTE 'successful_students'
+FROM successful_students ss 
+JOIN STUDENT s --joining CTE to students by student id
+ON ss.StudentId = s.StudentID
+ORDER BY ss.average_grade DESC;  --sorts result from highest to lowest average grade (descending order) 
+```
+
+The CTE is useful here since it calculates each student's average grade and keeps only students with an average of at least 85. This separates the calculation and filtering from the main query (inner join and ordering the columns by average grade in descending order), making the SQL easier to read and understand. 
+
+```{r}
+#Disconnecting - all database queries are finished
+DBI:: dbDisconnect(PSTAT132db)
+message("PSTAT132db Disconnected")
+```
+
